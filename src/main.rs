@@ -1,13 +1,12 @@
 use std::{
     io::{Read, Write},
     net::{TcpListener, TcpStream},
-    thread,
 };
 
 mod protocol;
 use protocol::Telnet;
 
-fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
+async fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
     println!("Connection Established: {}", stream.local_addr()?);
     let msg = [Telnet::IAC, Telnet::DO, Telnet::ECHO];
     stream.write_all(&msg)?;
@@ -38,6 +37,11 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
                         // Send an error message to the sender
 
                         //let buf: [u8] = "Test" as [u8];
+                        /*stream.write_all(
+                            "Invalid encoding detected. UTF8 encoding expected. MSG: \""
+                                + &buf[..n] as &str
+                                + ".\"",
+                        )*/
                     }
                 };
 
@@ -52,19 +56,23 @@ fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
     Ok(())
 }
 
-fn main() -> std::io::Result<()> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let listener = TcpListener::bind("127.0.0.1:8080")?;
 
     // accept connections and process them serially
-    for stream in listener.incoming() {
-        match stream {
-            Ok(stream) => {
-                thread::spawn(|| handle_client(stream));
+    for mut stream in listener.incoming() {
+        tokio::spawn(async move {
+            match stream {
+                Ok(stream) => match handle_client(stream).await {
+                    Ok(_) => continue,
+                    Err(e) => println!("Some error happened: {}", e),
+                },
+                Err(e) => {
+                    println!("Connection failed to establish: {}", e);
+                }
             }
-            Err(e) => {
-                println!("Connection failed to establish: {}", e);
-            }
-        }
+        });
     }
 
     Ok(())
