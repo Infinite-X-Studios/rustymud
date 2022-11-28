@@ -1,4 +1,5 @@
 use std::{
+    error::Error,
     io::{Read, Write},
     net::{TcpListener, TcpStream},
 };
@@ -6,7 +7,7 @@ use std::{
 mod protocol;
 use protocol::Telnet;
 
-async fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
+fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
     println!("Connection Established: {}", stream.local_addr()?);
     let msg = [Telnet::IAC, Telnet::DO, Telnet::ECHO];
     stream.write_all(&msg)?;
@@ -64,16 +65,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     for mut stream in listener.incoming() {
         tokio::spawn(async move {
             match stream {
-                Ok(stream) => match handle_client(stream).await {
-                    Ok(_) => continue,
-                    Err(e) => println!("Some error happened: {}", e),
-                },
+                Ok(stream) => handle_client(stream),
                 Err(e) => {
-                    println!("Connection failed to establish: {}", e);
+                    {
+                        println!("Connection failed to establish: {}", e);
+                    };
+                    Ok(())
                 }
             }
         });
     }
-
     Ok(())
 }
