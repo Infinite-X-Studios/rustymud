@@ -1,3 +1,5 @@
+pub mod flags;
+
 #[non_exhaustive]
 pub struct Telnet {}
 
@@ -6,7 +8,7 @@ impl Telnet {
     // Telnet Commands
     pub const SE: u8 = 240; // Subnegotiation End
     pub const NOP: u8 = 241; // No Operation
-    pub const DM: u8 = 242; // Data Mark: The data stream portion of a Synch.
+    pub const DM: u8 = 242; // Data Mark: The data stream portion of a Sync.
                             // This should always be accompanied by a TCP Urgent notification.
     pub const BRK: u8 = 243; // Break
     pub const IP: u8 = 244; // Interrupt Process
