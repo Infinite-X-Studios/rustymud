@@ -1,79 +1,97 @@
-use std::{
-    error::Error,
-    io::{Read, Write},
-    net::{TcpListener, TcpStream},
-};
+use tokio::io::{self, Interest};
+use tokio::net::{TcpListener, TcpStream};
 
 mod protocol;
 use protocol::Telnet;
 
-fn handle_client(mut stream: TcpStream) -> std::io::Result<()> {
-    println!("Connection Established: {}", stream.local_addr()?);
-    let msg = [Telnet::IAC, Telnet::DO, Telnet::ECHO];
-    stream.write_all(&msg)?;
+async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
+    println!("Connection attempt received.");
+    socket
+        .ready(Interest::READABLE | Interest::WRITABLE)
+        .await?;
+    println!("Connection Established: {}", socket.peer_addr()?);
 
+    let msg = [Telnet::IAC, Telnet::GA];
     loop {
-        let mut buf = [0u8; 4028];
-        let n = stream.read(&mut buf[..])?;
-
-        if n > 0 {
-            if buf[0] == Telnet::IAC {
-                println!("Interpret As Command Recieved!");
-
-                let mut command_string: String = String::new();
-
-                for bit in buf[..n].iter() {
-                    command_string.push_str(&Telnet::from_u8(*bit));
-                }
-
-                println!("{}", command_string);
-            } else {
-                match std::str::from_utf8(&buf[..n]) {
-                    Ok(s) => {
-                        // This is good, print it out!
-                        println!("Buffer: {}", s);
-                    }
-                    Err(_) => {
-                        // Ignore the input
-                        // Send an error message to the sender
-
-                        //let buf: [u8] = "Test" as [u8];
-                        /*stream.write_all(
-                            "Invalid encoding detected. UTF8 encoding expected. MSG: \""
-                                + &buf[..n] as &str
-                                + ".\"",
-                        )*/
-                    }
-                };
-
-                //println!("Buffer: {:?}", &buf[..n]);
+        match socket.try_write(&msg) {
+            Ok(_) => break,
+            Err(ref e) if e.kind() == io::ErrorKind::WouldBlock => {
+                continue;
             }
-        } else {
-            println!("Connection Closed: {}", stream.local_addr()?);
-            break;
+            Err(e) => {
+                return Err(e);
+            }
         }
     }
 
-    Ok(())
+    loop {
+        let mut buf = [0u8; 4028];
+        match socket.try_read(&mut buf[..]) {
+            // Connection closed
+            Ok(0) => {
+                println!("Connection Closed: {}", socket.local_addr()?);
+                return Ok(());
+            }
+            // Bytes recieved. n = number of bytes recieved.
+            Ok(n) => {
+                if buf[0] == Telnet::IAC {
+                    println!("Interpret As Command Recieved!");
+
+                    let mut command_string: String = String::new();
+
+                    for bit in buf[..n].iter() {
+                        if *bit == Telnet::DO { /* TODO: Handle DO(s) */ };
+
+                        command_string.push_str(&Telnet::from_u8(*bit));
+                    }
+
+                    println!("{}", command_string);
+                } else if let Ok(s) = std::str::from_utf8(&buf[..n]) {
+                    // This is good, print it out!
+                    println!("Buffer: {}", s);
+                } else {
+                    // Ignore the input
+                    // Send an error message to the sender
+
+                    socket.writable().await?;
+
+                    socket.try_write(
+                        "Invalid encoding detected. UTF8 encoding expected.".as_bytes(),
+                    )?;
+                }
+            }
+            // If error WouldBlock is returned, data is not yet ready to read, continue until it is.
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                continue;
+            }
+            // Error happened, pass it back to handle
+            Err(e) => return Err(e),
+        };
+    }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let listener = TcpListener::bind("127.0.0.1:8080")?;
+async fn main() -> std::io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:8080").await?;
 
     // accept connections and process them serially
-    for mut stream in listener.incoming() {
-        tokio::spawn(async move {
-            match stream {
-                Ok(stream) => handle_client(stream),
-                Err(e) => {
-                    {
-                        println!("Connection failed to establish: {}", e);
-                    };
-                    Ok(())
-                }
+    loop {
+        match listener.accept().await {
+            Ok((socket, _addr)) => {
+                tokio::spawn(async move {
+                    match handle_client(socket).await {
+                        Ok(_) => {
+                            println!("Client Disconnected.");
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                });
             }
-        });
+            Err(e) => {
+                println!("Client unable to get connected: {:?}", e);
+                return Err(e);
+            }
+        }
     }
-    Ok(())
 }
