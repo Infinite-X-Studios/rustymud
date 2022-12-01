@@ -2,7 +2,7 @@ use tokio::io::{self, Interest};
 use tokio::net::{TcpListener, TcpStream};
 
 mod protocol;
-use protocol::Telnet;
+use protocol::{flags, Telnet};
 
 async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
     println!("Connection attempt received.");
@@ -11,6 +11,7 @@ async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
         .await?;
     println!("Connection Established: {}", socket.peer_addr()?);
 
+    // Send a Go Ahead signal (This seems to fix some issues with telnet on Windows)
     let msg = [Telnet::IAC, Telnet::GA];
     loop {
         match socket.try_write(&msg) {
@@ -40,7 +41,36 @@ async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
                     let mut command_string: String = String::new();
 
                     for bit in buf[..n].iter() {
-                        if *bit == Telnet::DO { /* TODO: Handle DO(s) */ };
+                        if *bit == Telnet::DO {
+                            /* TODO: Handle DO(s) */
+                            println!("IAC DO command recieved.");
+                            if buf.len() > n {
+                                if buf[n + 1] == Telnet::TIMING_MARK {
+                                    println!("Sending IAC WILL TIMING_MARK");
+                                    socket.try_write(&[
+                                        Telnet::IAC,
+                                        Telnet::WILL,
+                                        Telnet::TIMING_MARK,
+                                    ])?;
+                                }
+                            } else {
+                                println!(
+                                    "There must have been an error. Nothing recieved after IAC DO!"
+                                );
+                            }
+                        } else if *bit == Telnet::WILL {
+                            /* TODO: Handle WILL(s) */
+                            println!("IAC WILL command recieved.");
+                        } else if *bit == Telnet::DONT {
+                            /* TODO: Handle DONT(s) */
+                            println!("IAC DONT command recieved.");
+                        } else if *bit == Telnet::WONT {
+                            /* TODO: Handle WONT(s) */
+                            println!("IAC WONT command recieved.");
+                        } else if *bit == Telnet::IP {
+                            println!("IAC IP command recieved.");
+                            return Ok(());
+                        }
 
                         command_string.push_str(&Telnet::from_u8(*bit));
                     }
@@ -50,11 +80,10 @@ async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
                     // This is good, print it out!
                     println!("Buffer: {}", s);
                 } else {
-                    // Ignore the input
-                    // Send an error message to the sender
-
+                    // Wait until the socket is writable.
                     socket.writable().await?;
 
+                    // Try to send the message
                     socket.try_write(
                         "Invalid encoding detected. UTF8 encoding expected.".as_bytes(),
                     )?;
@@ -89,8 +118,8 @@ async fn main() -> std::io::Result<()> {
                 });
             }
             Err(e) => {
-                println!("Client unable to get connected: {:?}", e);
-                return Err(e);
+                // TODO: We should have a log file where we log all of these errors.
+                println!("Client unable to connect: {:?}", e);
             }
         }
     }
