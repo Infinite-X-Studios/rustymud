@@ -1,15 +1,19 @@
-use tokio::io::{self, Interest};
-use tokio::net::{TcpListener, TcpStream};
+use simple_logger::SimpleLogger;
+use tokio::{
+    io::{self, Interest},
+    net::{TcpListener, TcpStream},
+};
 
 mod protocol;
+mod session;
 use protocol::{flags, Telnet};
 
 async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
-    println!("Connection attempt received.");
+    log::info!("Connection attempt received.");
     socket
         .ready(Interest::READABLE | Interest::WRITABLE)
         .await?;
-    println!("Connection Established: {}", socket.peer_addr()?);
+    log::info!("Connection Established: {}", socket.peer_addr()?);
 
     // Send a Go Ahead signal (This seems to fix some issues with telnet on Windows)
     let msg = [Telnet::IAC, Telnet::GA];
@@ -30,23 +34,31 @@ async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
         match socket.try_read(&mut buf[..]) {
             // Connection closed
             Ok(0) => {
-                println!("Connection Closed: {}", socket.local_addr()?);
+                log::debug!("Connection Closed: {}", socket.local_addr()?);
                 return Ok(());
             }
             // Bytes recieved. n = number of bytes recieved.
-            Ok(n) => {
+            Ok(mut n) => {
+                for u in buf[n - 2..n].iter().rev() {
+                    if u == &b"\r"[0] || u == &b"\n"[0] {
+                        n -= 1;
+                    } else {
+                        // Break out as soon as there are no more \n or \r bytes
+                        break;
+                    }
+                }
                 if buf[0] == Telnet::IAC {
-                    println!("Interpret As Command Recieved!");
+                    log::debug!("Interpret As Command Recieved!");
 
                     let mut command_string: String = String::new();
 
-                    for bit in buf[..n].iter() {
+                    for (i, bit) in buf[..n].iter().enumerate() {
                         if *bit == Telnet::DO {
                             /* TODO: Handle DO(s) */
-                            println!("IAC DO command recieved.");
-                            if buf.len() > n {
-                                if buf[n + 1] == Telnet::TIMING_MARK {
-                                    println!("Sending IAC WILL TIMING_MARK");
+                            log::debug!("IAC DO command recieved.");
+                            if i < n {
+                                if buf[i + 1] == Telnet::TIMING_MARK {
+                                    log::debug!("Sending IAC WILL TIMING_MARK");
                                     socket.try_write(&[
                                         Telnet::IAC,
                                         Telnet::WILL,
@@ -54,31 +66,32 @@ async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
                                     ])?;
                                 }
                             } else {
-                                println!(
+                                log::warn!(
                                     "There must have been an error. Nothing recieved after IAC DO!"
                                 );
                             }
                         } else if *bit == Telnet::WILL {
                             /* TODO: Handle WILL(s) */
-                            println!("IAC WILL command recieved.");
+                            log::debug!("IAC WILL command recieved.");
                         } else if *bit == Telnet::DONT {
                             /* TODO: Handle DONT(s) */
-                            println!("IAC DONT command recieved.");
+                            log::debug!("IAC DONT command recieved.");
                         } else if *bit == Telnet::WONT {
                             /* TODO: Handle WONT(s) */
-                            println!("IAC WONT command recieved.");
+                            log::debug!("IAC WONT command recieved.");
                         } else if *bit == Telnet::IP {
-                            println!("IAC IP command recieved.");
+                            log::debug!("IAC IP command recieved.");
+                            // Dropout to close the connection.
                             return Ok(());
                         }
 
                         command_string.push_str(&Telnet::from_u8(*bit));
                     }
 
-                    println!("{}", command_string);
+                    log::debug!("{}", command_string);
                 } else if let Ok(s) = std::str::from_utf8(&buf[..n]) {
                     // This is good, print it out!
-                    println!("Buffer: {}", s);
+                    log::info!("Buffer: {}", s);
                 } else {
                     // Wait until the socket is writable.
                     socket.writable().await?;
@@ -101,25 +114,41 @@ async fn handle_client(socket: TcpStream) -> std::io::Result<()> {
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:8080").await?;
+    match SimpleLogger::new().init() {
+        Ok(_) => {}
+        Err(e) => {
+            panic!("{}", e);
+        }
+    };
 
-    // accept connections and process them serially
+    let listener = match TcpListener::bind("127.0.0.1:8080").await {
+        Ok(l) => l,
+        Err(e) => {
+            log::error!("Error binding port: {}", e);
+            return Err(e);
+        }
+    };
+
+    // accept connections and process them sequentially
     loop {
         match listener.accept().await {
             Ok((socket, _addr)) => {
                 tokio::spawn(async move {
                     match handle_client(socket).await {
                         Ok(_) => {
-                            println!("Client Disconnected.");
+                            log::info!("Client Disconnected.");
                             Ok(())
                         }
-                        Err(e) => Err(e),
+                        Err(e) => {
+                            log::error!("Handle Client: {}", e);
+                            Err(e)
+                        }
                     }
                 });
             }
             Err(e) => {
                 // TODO: We should have a log file where we log all of these errors.
-                println!("Client unable to connect: {:?}", e);
+                log::error!("Client unable to connect: {:?}", e);
             }
         }
     }
